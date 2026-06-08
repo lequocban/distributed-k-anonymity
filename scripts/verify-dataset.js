@@ -6,22 +6,11 @@ const initSqlJs = require('sql.js');
 const path     = require('path');
 const {
   applyGeneralization,
-  checkKAnonymity,
-  calculateInformationLoss,
   computeAgeDomain,
+  evaluateLevel,
+  findBestLevel,
+  LEVELS,
 } = require('../coordinator/kanonymity');
-
-const LEVELS = [
-  { age: 0, zip: 0, desc: 'Original (no generalization)' },
-  { age: 1, zip: 0, desc: 'Age: 10-year range | ZipCode: exact 5-digit' },
-  { age: 1, zip: 1, desc: 'Age: 10-year range | ZipCode: 4-digit prefix' },
-  { age: 1, zip: 2, desc: 'Age: 10-year range | ZipCode: 3-digit prefix' },
-  { age: 2, zip: 1, desc: 'Age: 20-year range | ZipCode: 4-digit prefix' },
-  { age: 2, zip: 2, desc: 'Age: 20-year range | ZipCode: 3-digit prefix' },
-  { age: 3, zip: 2, desc: 'Age: * | ZipCode: 3-digit prefix' },
-  { age: 3, zip: 3, desc: 'Age: * | ZipCode: 2-digit prefix' },
-  { age: 3, zip: 4, desc: 'Age: * | ZipCode: *' },
-];
 
 const DB_A = path.join(__dirname, '..', 'node-a',  'site_a.db');
 const DB_B = path.join(__dirname, '..', 'node-b',  'site_b.db');
@@ -78,11 +67,11 @@ async function main() {
   console.log('═'.repeat(115));
 
   for (const lvl of LEVELS) {
-    const gen = applyGeneralization(all, lvl.age, lvl.zip);
-    const result = checkKAnonymity(gen, 5);
-    const supCount = result.violatingGroups.reduce((s, g) => s + g.count, 0);
-    const il = calculateInformationLoss(all, lvl.age, lvl.zip, supCount, ageDomain);
-    const status = result.satisfied ? '✓' : '✗';
+    const evaluation = evaluateLevel(all, lvl.age, lvl.zip, 5, ageDomain);
+    const result = evaluation.result;
+    const supCount = evaluation.suppressedCount;
+    const il = evaluation.il;
+    const status = evaluation.keptCount > 0 && result.satisfied ? '✓' : '✗';
     console.log(
       `${lvl.desc.substring(0, 22).padEnd(6)} ` +
       `${lvl.age}/${lvl.zip}`.padEnd(5) +
@@ -102,33 +91,16 @@ async function main() {
   console.log('═'.repeat(95));
 
   for (const k of [5, 10, 20, 30, 50, 100, 500, 1000]) {
-    let best = null;
-    let bestIL = Infinity;
-    for (const lvl of LEVELS) {
-      const gen = applyGeneralization(all, lvl.age, lvl.zip);
-      const result = checkKAnonymity(gen, k);
-      if (result.satisfied) {
-        const sup = result.violatingGroups.reduce((s, g) => s + g.count, 0);
-        const il = calculateInformationLoss(all, lvl.age, lvl.zip, sup, ageDomain);
-        if (il.ilPercent < bestIL) {
-          best = lvl;
-          bestIL = il.ilPercent;
-          var bestCellAge = il.cellILAge;
-          var bestCellZip = il.cellILZip;
-          var bestSup = sup;
-          var bestValid = all.length - sup;
-        }
-      }
-    }
-    if (best) {
+    const best = findBestLevel(all, k, ageDomain);
+    if (best.level) {
       console.log(
         `k=${k}`.padEnd(5) +
-        `(${best.age},${best.zip})`.padEnd(6) +
-        `${bestIL}%`.padEnd(10) +
-        `${bestCellAge}%`.padEnd(12) +
-        `${bestCellZip}%`.padEnd(12) +
-        `${bestSup}/${all.length}`.padEnd(12) +
-        `${bestValid}/${all.length}`
+        `(${best.level.age},${best.level.zip})`.padEnd(6) +
+        `${best.eval.il.ilPercent}%`.padEnd(10) +
+        `${best.eval.il.cellILAge}%`.padEnd(12) +
+        `${best.eval.il.cellILZip}%`.padEnd(12) +
+        `${best.eval.suppressedCount}/${all.length}`.padEnd(12) +
+        `${best.eval.keptCount}/${all.length}`
       );
     } else {
       console.log(`k=${k}`.padEnd(5) + 'impossible even at max level');

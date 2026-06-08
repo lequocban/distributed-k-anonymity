@@ -9,7 +9,8 @@
     "node-a": "node node-a/index.js",
     "node-b": "node node-b/index.js",
     "coordinator": "node coordinator/index.js",
-    "dev": "npm run generate && npm start"
+    "dev": "npm run generate && npm start",
+    "test": "node scripts/test-basic.js"
   },
   "keywords": [
     "k-anonymity",

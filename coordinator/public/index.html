@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Distributed k-Anonymity Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Project #102</p>
+      <h1>Distributed k-Anonymity</h1>
+      <p class="hero-copy">
+        Kiểm tra các node, chạy thuật toán với giá trị k tùy chọn và xem kết quả
+        tổng quát hóa trên một giao diện.
+      </p>
+    </div>
+    <button id="healthButton" class="button button-secondary" type="button">
+      Health check
+    </button>
+  </header>
+
+  <main class="container">
+    <section class="panel" aria-labelledby="healthTitle">
+      <div class="section-heading">
+        <div>
+          <p class="section-label">Trạng thái hệ thống</p>
+          <h2 id="healthTitle">Health check</h2>
+        </div>
+        <span id="healthTimestamp" class="muted">Chưa kiểm tra</span>
+      </div>
+      <div id="healthCards" class="health-grid">
+        <article class="health-card">
+          <span class="status-dot status-idle"></span>
+          <div>
+            <strong>Coordinator</strong>
+            <p>Nhấn Health check để kiểm tra</p>
+          </div>
+        </article>
+      </div>
+      <p id="healthError" class="message message-error hidden"></p>
+    </section>
+
+    <section class="panel" aria-labelledby="runTitle">
+      <div class="section-heading">
+        <div>
+          <p class="section-label">Thuật toán</p>
+          <h2 id="runTitle">Chạy k-anonymity</h2>
+        </div>
+      </div>
+
+      <form id="runForm" class="run-form">
+        <label for="kInput">
+          Giá trị k
+          <input id="kInput" name="k" type="number" min="1" step="1" value="5" required>
+        </label>
+        <button id="runButton" class="button button-primary" type="submit">
+          Chạy thuật toán
+        </button>
+        <button id="levelsButton" class="button button-secondary" type="button">
+          So sánh các mức k
+        </button>
+      </form>
+
+      <p id="runMessage" class="message hidden"></p>
+
+      <div id="resultArea" class="hidden">
+        <div id="summaryCards" class="summary-grid"></div>
+
+        <div class="result-layout">
+          <article class="detail-card">
+            <h3>Generalization</h3>
+            <dl id="generalizationDetails" class="detail-list"></dl>
+          </article>
+          <article class="detail-card">
+            <h3>Information Loss</h3>
+            <dl id="informationLossDetails" class="detail-list"></dl>
+          </article>
+          <article class="detail-card">
+            <h3>Phân bố theo node</h3>
+            <div id="nodeDetails"></div>
+          </article>
+        </div>
+
+        <div class="table-card">
+          <div class="table-toolbar">
+            <div>
+              <p class="section-label">Chi tiết dữ liệu</p>
+              <h3 id="recordsTitle">Bản ghi đã giữ lại</h3>
+            </div>
+            <div class="toolbar-actions">
+              <button
+                id="toggleOriginalData"
+                class="icon-button"
+                type="button"
+                aria-pressed="false"
+                aria-label="Hiện dữ liệu gốc"
+                title="Hiện dữ liệu gốc"
+              >
+                <svg class="eye-icon eye-open" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                <svg class="eye-icon eye-closed hidden" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m3 3 18 18"></path>
+                  <path d="M10.6 6.2C11 6.1 11.5 6 12 6c6.5 0 10 6 10 6a17.7 17.7 0 0 1-3 3.7"></path>
+                  <path d="M6.2 6.2C3.5 8 2 12 2 12s3.5 6 10 6c1.8 0 3.3-.5 4.6-1.2"></path>
+                  <path d="M9.9 9.9A3 3 0 0 0 14.1 14.1"></path>
+                </svg>
+                <span id="toggleOriginalDataText">Hiện dữ liệu gốc</span>
+              </button>
+              <div class="segmented" role="group" aria-label="Loại bản ghi">
+                <button class="segment active" data-record-type="kept" type="button">
+                  Đã giữ
+                </button>
+                <button class="segment" data-record-type="suppressed" type="button">
+                  Đã loại
+                </button>
+              </div>
+              <label class="page-size-label" for="pageSize">
+                Số dòng
+                <select id="pageSize">
+                  <option value="10">10</option>
+                  <option value="25" selected>25</option>
+                  <option value="50">50</option>
+                  <option value="100">100</option>
+                </select>
+              </label>
+            </div>
+          </div>
+
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>ID</th>
+                  <th>Age gốc</th>
+                  <th>Age generalized</th>
+                  <th>Gender</th>
+                  <th>Zip gốc</th>
+                  <th>Zip generalized</th>
+                  <th>Disease</th>
+                </tr>
+              </thead>
+              <tbody id="recordsBody"></tbody>
+            </table>
+          </div>
+
+          <div class="pagination">
+            <span id="pageInfo" class="muted"></span>
+            <div class="pagination-buttons">
+              <button id="previousPage" class="button button-small" type="button">
+                Trang trước
+              </button>
+              <button id="nextPage" class="button button-small" type="button">
+                Trang sau
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="levelsArea" class="panel hidden" aria-labelledby="levelsTitle">
+      <div class="section-heading">
+        <div>
+          <p class="section-label">Endpoint /run-levels</p>
+          <h2 id="levelsTitle">So sánh các mức k</h2>
+        </div>
+        <span id="levelsTotal" class="muted"></span>
+      </div>
+      <p id="levelsMessage" class="message hidden"></p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>k</th>
+              <th>Trạng thái</th>
+              <th>Age level</th>
+              <th>Zip level</th>
+              <th>Information Loss</th>
+              <th>Suppressed</th>
+              <th>Valid</th>
+              <th>Mô tả</th>
+            </tr>
+          </thead>
+          <tbody id="levelsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

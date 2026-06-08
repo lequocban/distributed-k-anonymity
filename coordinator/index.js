@@ -1,5 +1,6 @@
 const express = require('express');
 const axios   = require('axios');
+const path    = require('path');
 const {
   applyGeneralization,
   checkKAnonymity,
@@ -8,7 +9,7 @@ const {
 } = require('./kanonymity');
 
 const app  = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 const K    = 5;
 
 const NODES = {
@@ -17,6 +18,21 @@ const NODES = {
 };
 
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+function parseK(value, defaultValue = K) {
+  if (value === undefined) return { ok: true, value: defaultValue };
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
+    return { ok: false, error: 'k must be a positive integer' };
+  }
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    return { ok: false, error: 'k is too large' };
+  }
+
+  return { ok: true, value: parsed };
+}
 
 async function fetchFromNode(nodeUrl, endpoint) {
   try {
@@ -37,7 +53,12 @@ app.get('/health', async (req, res) => {
 });
 
 app.get('/run', async (req, res) => {
-  const k = parseInt(req.query.k) || K;
+  const parsedK = parseK(req.query.k);
+  if (!parsedK.ok) {
+    return res.status(400).json({ error: parsedK.error });
+  }
+
+  const k = parsedK.value;
   console.log(`\n> Running k-anonymity with k=${k}...`);
 
   const fetchResults = await Promise.all(
@@ -212,7 +233,7 @@ app.get('/run-levels', async (req, res) => {
   const ageDomain = computeAgeDomain(mergedAll);
   const comparison  = [];
 
-  for (const k of [3, 5, 7, 10, 20]) {
+  for (const k of [5, 10, 20, 50, 150, 250, 350, 500, 700]) {
     const { level, eval: evalResult } = findBestLevel(mergedAll, k, ageDomain);
     comparison.push({
       k,
@@ -234,6 +255,7 @@ app.get('/run-levels', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Coordinator running on http://localhost:${PORT}`);
+  console.log(`  GET /              -- open web dashboard`);
   console.log(`  GET /health       -- check node status`);
   console.log(`  GET /run          -- run k-anonymity (default k=5)`);
   console.log(`  GET /run?k=7     -- run with custom k`);

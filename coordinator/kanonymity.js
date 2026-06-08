@@ -172,17 +172,33 @@ function calculateInformationLoss(records, ageLevel, zipLevel, suppressedCount, 
   };
 }
 
-const LEVELS = [
-  { age: 0, zip: 0, desc: 'Original (no generalization)' },
-  { age: 1, zip: 0, desc: 'Age: 10-year range | ZipCode: exact 5-digit' },
-  { age: 1, zip: 1, desc: 'Age: 10-year range | ZipCode: 4-digit prefix' },
-  { age: 1, zip: 2, desc: 'Age: 10-year range | ZipCode: 3-digit prefix' },
-  { age: 2, zip: 1, desc: 'Age: 20-year range | ZipCode: 4-digit prefix' },
-  { age: 2, zip: 2, desc: 'Age: 20-year range | ZipCode: 3-digit prefix' },
-  { age: 3, zip: 2, desc: 'Age: * | ZipCode: 3-digit prefix' },
-  { age: 3, zip: 3, desc: 'Age: * | ZipCode: 2-digit prefix' },
-  { age: 3, zip: 4, desc: 'Age: * | ZipCode: *' },
+const AGE_LEVEL_DESCRIPTIONS = [
+  'exact',
+  '10-year range',
+  '20-year range',
+  '*',
 ];
+
+const ZIP_LEVEL_DESCRIPTIONS = [
+  'exact 5-digit',
+  '4-digit prefix',
+  '3-digit prefix',
+  '2-digit prefix',
+  '*',
+];
+
+const LEVELS = [];
+for (let age = 0; age <= 3; age++) {
+  for (let zip = 0; zip <= ZIP_MAX_LEVEL; zip++) {
+    LEVELS.push({
+      age,
+      zip,
+      desc: age === 0 && zip === 0
+        ? 'Original (no generalization)'
+        : `Age: ${AGE_LEVEL_DESCRIPTIONS[age]} | ZipCode: ${ZIP_LEVEL_DESCRIPTIONS[zip]}`,
+    });
+  }
+}
 
 function getPerNodeSuppressedCount(records) {
   const result = {};
@@ -196,16 +212,17 @@ function getPerNodeSuppressedCount(records) {
 
 function evaluateLevel(allRecords, ageLevel, zipLevel, k, ageDomain) {
   const generalized = applyGeneralization(allRecords, ageLevel, zipLevel);
-  const result      = checkKAnonymity(generalized, k);
+  const beforeSuppression = checkKAnonymity(generalized, k);
 
-  const suppressedCount = result.violatingGroups.reduce(
+  const suppressedCount = beforeSuppression.violatingGroups.reduce(
     (sum, g) => sum + g.count, 0
   );
-  const violatingKeys = new Set(result.violatingGroups.map(g => g.key));
+  const violatingKeys = new Set(beforeSuppression.violatingGroups.map(g => g.key));
   const kept = generalized.filter(r => {
     const key = `${r.age_gen}|${r.gender}|${r.zip_gen}`;
     return !violatingKeys.has(key);
   });
+  const result = checkKAnonymity(kept, k);
 
   const marked = generalized.map(r => ({
     ...r,
@@ -219,6 +236,7 @@ function evaluateLevel(allRecords, ageLevel, zipLevel, k, ageDomain) {
     ageLevel,
     zipLevel,
     result,
+    beforeSuppression,
     suppressedCount,
     perNodeSuppressed,
     keptCount:    kept.length,
@@ -236,8 +254,16 @@ function findBestLevel(allRecords, k = 5, ageDomain = null) {
   for (const lvl of LEVELS) {
     const eval_ = evaluateLevel(allRecords, lvl.age, lvl.zip, k, domain);
 
-    if (eval_.result.satisfied) {
-      if (!best || eval_.il.ilPercent < best.eval.il.ilPercent) {
+    if (eval_.keptCount > 0 && eval_.result.satisfied) {
+      const hasLowerIL = !best || eval_.il.ilPercent < best.eval.il.ilPercent;
+      const hasEqualIL = best && eval_.il.ilPercent === best.eval.il.ilPercent;
+      const hasLessSuppression = hasEqualIL &&
+        eval_.suppressedCount < best.eval.suppressedCount;
+      const hasLowerLevel = hasEqualIL &&
+        eval_.suppressedCount === best.eval.suppressedCount &&
+        (lvl.age + lvl.zip) < (best.level.age + best.level.zip);
+
+      if (hasLowerIL || hasLessSuppression || hasLowerLevel) {
         best = { level: lvl, eval: eval_ };
       }
     }
@@ -251,6 +277,7 @@ module.exports = {
   applyGeneralization,
   checkKAnonymity,
   calculateInformationLoss,
+  evaluateLevel,
   findBestLevel,
   computeAgeDomain,
   LEVELS,

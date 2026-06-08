@@ -8,7 +8,7 @@ Hệ thống triển khai thuật toán **Distributed k-Anonymity** với `k = 5
 
 - **Quasi-identifiers (QI):** `Age`, `Gender`, `ZipCode`
 - **Sensitive attribute:** `Disease`
-- **Kỹ thuật:** Generalization (tổng quát hóa khoảng tuổi)
+- **Kỹ thuật:** Generalization và suppression
 - **Metric:** Information Loss (IL)
 
 ## Architecture
@@ -36,8 +36,8 @@ npm run generate
 ```
 
 This creates:
-- `node-a/site_a.db` — 300 records (ZipCode 7xxxx)
-- `node-b/site_b.db` — 250 records (ZipCode 1xxxx)
+- `node-a/site_a.db` — 1.000 records (ZipCode 7xxxx)
+- `node-b/site_b.db` — 1.000 records (ZipCode 1xxxx)
 
 ### 3. Start all servers
 
@@ -55,6 +55,23 @@ npm run coordinator # Terminal 3
 
 ### 4. Test endpoints
 
+Mở dashboard trong trình duyệt:
+
+```text
+http://localhost:3000/
+```
+
+Dashboard hỗ trợ:
+
+- Health check coordinator, Node A và Node B.
+- Nhập giá trị `k` và chạy thuật toán.
+- Hiển thị generalization, Information Loss và thống kê theo node.
+- Chuyển giữa bản ghi giữ lại và bản ghi bị suppression.
+- Phân trang kết quả với 10, 25, 50 hoặc 100 dòng mỗi trang.
+- So sánh kết quả từ endpoint `/run-levels`.
+
+Hoặc gọi trực tiếp các endpoint:
+
 ```bash
 # Check node status
 curl http://localhost:3000/health
@@ -69,7 +86,16 @@ curl "http://localhost:3000/run?k=7"
 curl http://localhost:3000/run-levels
 ```
 
-### 5. Demo failure scenario
+`k` phải là số nguyên dương. Ví dụ `k=0`, `k=-1`, hoặc `k=1.5`
+sẽ trả về HTTP 400.
+
+### 5. Run regression tests
+
+```bash
+npm test
+```
+
+### 6. Demo failure scenario
 
 Kill Node B (Ctrl+C in terminal running `node node-b/index.js`), then:
 
@@ -86,23 +112,39 @@ npm run node-b
 
 ## Generalization Levels
 
-| Level | Description  | Example       |
-|-------|-------------|---------------|
-| 0     | Original    | `25`          |
-| 1     | 10-year range | `20-29`     |
-| 2     | 20-year range | `20-39`     |
-| 3     | Suppressed  | `*`           |
+Hệ thống đánh giá đầy đủ 20 tổ hợp giữa 4 mức tuổi và 5 mức zipcode.
+
+| Age level | Description | Example |
+|-----------|-------------|---------|
+| 0 | Original | `25` |
+| 1 | 10-year range | `20-29` |
+| 2 | 20-year range | `20-39` |
+| 3 | Full-domain generalization | `*` |
+
+| Zip level | Description | Example |
+|-----------|-------------|---------|
+| 0 | Exact 5-digit | `70001` |
+| 1 | 4-digit prefix | `7000*` |
+| 2 | 3-digit prefix | `700**` |
+| 3 | 2-digit prefix | `70***` |
+| 4 | Full-domain generalization | `*****` |
+
+Sau generalization, các nhóm QI có kích thước nhỏ hơn `k` bị suppression.
+Một mức chỉ hợp lệ khi còn ít nhất một bản ghi và mọi nhóm còn lại đều đạt `k`.
 
 ## Information Loss Formula
 
-```
-IL = (cells generalized / total QI cells) * 100%
+```text
+IL_age = normalized age interval width
+IL_zip = zipcode level / 4
+IL_sup = suppressed records / total records
+Overall IL = (IL_age + IL_zip + IL_sup) / 3 * 100%
 ```
 
 ## Tech Stack
 
 - Node.js (v18+)
 - Express.js
-- SQLite (`better-sqlite3`)
+- SQLite in-memory engine (`sql.js`)
 - Axios
 - Concurrently
