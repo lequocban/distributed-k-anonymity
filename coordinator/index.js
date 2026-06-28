@@ -16,8 +16,8 @@ const PORT = Number(process.env.PORT) || 3000;
 const K    = 5;
 
 const NODES = {
-  A: 'http://localhost:3001',
-  B: 'http://localhost:3002',
+  A: process.env.NODE_A_URL || 'http://localhost:3001',
+  B: process.env.NODE_B_URL || 'http://localhost:3002',
 };
 
 app.use(express.json());

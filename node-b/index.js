@@ -11,7 +11,7 @@ const {
 } = require('./database');
 
 const app  = express();
-const PORT = 3002;
+const PORT = Number(process.env.PORT) || 3002;
 
 app.use(express.json());
 

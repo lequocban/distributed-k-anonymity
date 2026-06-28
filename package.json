@@ -11,7 +11,10 @@
     "coordinator": "node coordinator/index.js",
     "dev": "npm run generate && npm start",
     "test": "node scripts/test-basic.js",
-    "hacker-mode": "node scripts/hacker-mode.js"
+    "hacker-mode": "node scripts/hacker-mode.js",
+    "docker:build": "docker compose build",
+    "docker:up": "docker compose up",
+    "docker:down": "docker compose down"
   },
   "keywords": [
     "k-anonymity",

@@ -148,3 +148,41 @@ Overall IL = (IL_age + IL_zip + IL_sup) / 3 * 100%
 - SQLite in-memory engine (`sql.js`)
 - Axios
 - Concurrently
+- Docker & Docker Compose
+
+## Triển khai với Docker (Deploy with Docker)
+
+Hệ thống hỗ trợ chạy trong các container Docker cô lập để quản lý và vận hành độc lập các node.
+
+### 1. Tạo dữ liệu mẫu trên host (nếu chưa có)
+Chạy lệnh sau trên máy host để tạo file database SQLite cho Node A và Node B:
+```bash
+npm run generate
+```
+
+### 2. Xây dựng Docker Images
+Build các service (Coordinator, Node A, Node B) bằng lệnh:
+```bash
+npm run docker:build
+# hoặc: docker compose build
+```
+
+### 3. Khởi chạy toàn bộ hệ thống
+Khởi động 3 container chạy song song trong mạng nội bộ của Docker:
+```bash
+npm run docker:up
+# hoặc: docker compose up
+```
+
+Sau khi hệ thống khởi động:
+- **Coordinator** lắng nghe tại: `http://localhost:3000` (được ánh xạ từ container)
+- **Node A** lắng nghe tại: `http://localhost:3001`
+- **Node B** lắng nghe tại: `http://localhost:3002`
+- Dữ liệu cơ sở dữ liệu (`site_a.db` và `site_b.db`) được ánh xạ qua **Docker Named Volumes** (`node-a-db` và `node-b-db`) để đảm bảo tính toàn vẹn và lưu trữ lâu dài (persistence).
+
+### 4. Dừng hệ thống
+Để dừng các container và giải phóng tài nguyên:
+```bash
+npm run docker:down
+# hoặc: docker compose down
+```

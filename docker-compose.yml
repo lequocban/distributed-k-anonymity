@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  node-a:
+    build:
+      context: .
+      dockerfile: node-a/Dockerfile
+    container_name: k-anon-node-a
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_API_TOKEN=${NODE_API_TOKEN:-k-anon-secret-2025-xT9mLpQrZ4wVnKj8}
+      - DB_PATH=/usr/src/app/node-a/site_a.db
+    volumes:
+      - node-a-db:/usr/src/app/node-a
+
+  node-b:
+    build:
+      context: .
+      dockerfile: node-b/Dockerfile
+    container_name: k-anon-node-b
+    ports:
+      - "3002:3002"
+    environment:
+      - PORT=3002
+      - NODE_API_TOKEN=${NODE_API_TOKEN:-k-anon-secret-2025-xT9mLpQrZ4wVnKj8}
+      - DB_PATH=/usr/src/app/node-b/site_b.db
+    volumes:
+      - node-b-db:/usr/src/app/node-b
+
+  coordinator:
+    build:
+      context: .
+      dockerfile: coordinator/Dockerfile
+    container_name: k-anon-coordinator
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - NODE_API_TOKEN=${NODE_API_TOKEN:-k-anon-secret-2025-xT9mLpQrZ4wVnKj8}
+      - NODE_A_URL=http://node-a:3001
+      - NODE_B_URL=http://node-b:3002
+    depends_on:
+      - node-a
+      - node-b
+
+volumes:
+  node-a-db:
+  node-b-db:
