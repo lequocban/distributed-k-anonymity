@@ -290,7 +290,7 @@ app.get('/run-levels', async (req, res) => {
   const comparison = [];
   const ageDomain = 39;
 
-  for (const k of [5, 10, 20, 50, 150, 250, 350, 500, 700]) {
+  for (const k of [5, 10, 20, 50, 150, 250, 350, 500, 700, 1000, 1500]) {
     let bestLvl = null;
     let bestIL  = Infinity;
 

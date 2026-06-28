@@ -241,7 +241,6 @@ async function loadLevels() {
         <td>${escapeHtml(item.zip_level ?? '-')}</td>
         <td>${escapeHtml(item.information_loss_percent ?? '-')}%</td>
         <td>${escapeHtml(item.suppressed ?? '-')}</td>
-        <td>${escapeHtml(item.total_valid ?? '-')}</td>
         <td>${escapeHtml(item.description)}</td>
       </tr>
     `).join('');
