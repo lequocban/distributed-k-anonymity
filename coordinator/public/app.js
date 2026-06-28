@@ -1,9 +1,7 @@
 const state = {
   result: null,
-  recordType: 'kept',
   page: 1,
   pageSize: 25,
-  showOriginalData: false,
 };
 
 const elements = {
@@ -23,8 +21,6 @@ const elements = {
   nodeDetails: document.querySelector('#nodeDetails'),
   recordsTitle: document.querySelector('#recordsTitle'),
   recordsBody: document.querySelector('#recordsBody'),
-  toggleOriginalData: document.querySelector('#toggleOriginalData'),
-  toggleOriginalDataText: document.querySelector('#toggleOriginalDataText'),
   pageSize: document.querySelector('#pageSize'),
   pageInfo: document.querySelector('#pageInfo'),
   previousPage: document.querySelector('#previousPage'),
@@ -167,26 +163,7 @@ function renderSummary(data) {
 
 function currentRecords() {
   if (!state.result) return [];
-  return state.recordType === 'kept'
-    ? state.result.anonymized_records || []
-    : state.result.suppressed_records || [];
-}
-
-function originalValue(value) {
-  if (state.showOriginalData) return escapeHtml(value);
-  return '<span class="masked-value" aria-label="Dữ liệu gốc đang bị che">••••••</span>';
-}
-
-function renderOriginalDataToggle() {
-  const button = elements.toggleOriginalData;
-  const text = state.showOriginalData ? 'Che dữ liệu gốc' : 'Hiện dữ liệu gốc';
-
-  button.setAttribute('aria-pressed', String(state.showOriginalData));
-  button.setAttribute('aria-label', text);
-  button.title = text;
-  elements.toggleOriginalDataText.textContent = text;
-  button.querySelector('.eye-open').classList.toggle('hidden', state.showOriginalData);
-  button.querySelector('.eye-closed').classList.toggle('hidden', !state.showOriginalData);
+  return state.result.anonymized_records || [];
 }
 
 function renderRecords() {
@@ -197,22 +174,18 @@ function renderRecords() {
   const start = (state.page - 1) * state.pageSize;
   const pageRecords = records.slice(start, start + state.pageSize);
 
-  elements.recordsTitle.textContent = state.recordType === 'kept'
-    ? `Bản ghi đã giữ lại (${records.length})`
-    : `Bản ghi đã suppression (${records.length})`;
+  elements.recordsTitle.textContent = `Bản ghi đã giữ lại (${records.length})`;
 
   if (pageRecords.length === 0) {
     elements.recordsBody.innerHTML =
-      '<tr><td class="empty-row" colspan="8">Không có bản ghi để hiển thị</td></tr>';
+      '<tr><td class="empty-row" colspan="6">Không có bản ghi để hiển thị</td></tr>';
   } else {
     elements.recordsBody.innerHTML = pageRecords.map(record => `
       <tr>
-        <td><span class="badge ${state.recordType === 'kept' ? 'badge-success' : 'badge-danger'}">Node ${escapeHtml(record._node)}</span></td>
-        <td>${originalValue(record.id)}</td>
-        <td>${originalValue(record.age)}</td>
+        <td><span class="badge badge-success">Node ${escapeHtml(record._node)}</span></td>
+        <td>${escapeHtml(record.id)}</td>
         <td>${escapeHtml(record.age_gen)}</td>
         <td>${escapeHtml(record.gender)}</td>
-        <td>${originalValue(record.zipcode)}</td>
         <td>${escapeHtml(record.zip_gen)}</td>
         <td>${escapeHtml(record.disease)}</td>
       </tr>
@@ -238,12 +211,7 @@ async function runKAnonymity(event) {
   try {
     const data = await requestJson(`/run?k=${encodeURIComponent(k)}`);
     state.result = data;
-    state.recordType = 'kept';
     state.page = 1;
-
-    document.querySelectorAll('[data-record-type]').forEach(button => {
-      button.classList.toggle('active', button.dataset.recordType === 'kept');
-    });
 
     renderSummary(data);
     renderRecords();
@@ -290,26 +258,10 @@ elements.healthButton.addEventListener('click', checkHealth);
 elements.runForm.addEventListener('submit', runKAnonymity);
 elements.levelsButton.addEventListener('click', loadLevels);
 
-document.querySelectorAll('[data-record-type]').forEach(button => {
-  button.addEventListener('click', () => {
-    state.recordType = button.dataset.recordType;
-    state.page = 1;
-    document.querySelectorAll('[data-record-type]').forEach(item => {
-      item.classList.toggle('active', item === button);
-    });
-    renderRecords();
-  });
-});
 
 elements.pageSize.addEventListener('change', () => {
   state.pageSize = Number(elements.pageSize.value);
   state.page = 1;
-  renderRecords();
-});
-
-elements.toggleOriginalData.addEventListener('click', () => {
-  state.showOriginalData = !state.showOriginalData;
-  renderOriginalDataToggle();
   renderRecords();
 });
 
@@ -323,5 +275,4 @@ elements.nextPage.addEventListener('click', () => {
   renderRecords();
 });
 
-renderOriginalDataToggle();
 checkHealth();

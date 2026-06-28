@@ -1,11 +1,14 @@
-const express = require('express');
-const axios   = require('axios');
-const path    = require('path');
+const express  = require('express');
+const axios    = require('axios');
+const path     = require('path');
+const { NODE_API_TOKEN } = require('../config');
 const {
   applyGeneralization,
   checkKAnonymity,
   findBestLevel,
   computeAgeDomain,
+  LEVELS,
+  ZIP_MAX_LEVEL,
 } = require('./kanonymity');
 
 const app  = express();
@@ -20,29 +23,38 @@ const NODES = {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── Axios helper with Bearer token ─────────────────────────────────────────
+const AUTH_HEADER = { Authorization: `Bearer ${NODE_API_TOKEN}` };
+
 function parseK(value, defaultValue = K) {
   if (value === undefined) return { ok: true, value: defaultValue };
   if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) {
     return { ok: false, error: 'k must be a positive integer' };
   }
-
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed)) {
     return { ok: false, error: 'k is too large' };
   }
-
   return { ok: true, value: parsed };
 }
 
-async function fetchFromNode(nodeUrl, endpoint) {
+async function fetchFromNode(nodeUrl, endpoint, options = {}) {
   try {
-    const res = await axios.get(`${nodeUrl}${endpoint}`, { timeout: 5000 });
+    const res = await axios({
+      method: options.method || 'get',
+      url: `${nodeUrl}${endpoint}`,
+      headers: { ...AUTH_HEADER, ...(options.headers || {}) },
+      data: options.data,
+      timeout: 5000,
+    });
     return { ok: true, data: res.data };
   } catch (err) {
-    return { ok: false, error: `${nodeUrl} unreachable: ${err.message}` };
+    const status = err.response ? err.response.status : null;
+    return { ok: false, error: `${nodeUrl} unreachable: ${err.message}`, status };
   }
 }
 
+// ── GET /health ─────────────────────────────────────────────────────────────
 app.get('/health', async (req, res) => {
   const results = {};
   for (const [name, url] of Object.entries(NODES)) {
@@ -52,205 +64,271 @@ app.get('/health', async (req, res) => {
   res.json({ coordinator: 'online', nodes: results });
 });
 
+// ── GET /run ────────────────────────────────────────────────────────────────
+// Privacy-Preserving Protocol:
+//  1. For each generalization level, call /check-anonymity on both nodes
+//     → get hashed QI frequencies only (no raw identifiers).
+//  2. Sum frequencies by hash globally.
+//  3. If all hashes satisfy count >= k → level is valid.
+//  4. Compute blacklistedHashes (count < k) for suppression.
+//  5. Fetch anonymized records via POST /anonymized-data with blacklist.
 app.get('/run', async (req, res) => {
   const parsedK = parseK(req.query.k);
   if (!parsedK.ok) {
     return res.status(400).json({ error: parsedK.error });
   }
-
   const k = parsedK.value;
-  console.log(`\n> Running k-anonymity with k=${k}...`);
+  console.log(`\n> Running k-anonymity (Privacy-Preserving Protocol) with k=${k}...`);
 
-  const fetchResults = await Promise.all(
-    Object.entries(NODES).map(async ([name, url]) => {
-      const r = await fetchFromNode(url, '/patients');
-      return { name, ...r };
-    })
-  );
+  // ── Step 1: Find best generalization level via hashed QI protocol ─────────
+  let bestLevel  = null;
+  let bestSuppressed = null; // { hash: globalCount }
+  let bestIL     = Infinity;
 
-  const failedNodes = fetchResults.filter(r => !r.ok);
-  if (failedNodes.length > 0) {
-    const msg = failedNodes.map(n => `Node ${n.name}: ${n.error}`).join('; ');
-    console.error(`! Node unreachable: ${msg}`);
-    return res.status(503).json({
-      error: 'k-anonymity cannot be guaranteed — one or more nodes are unreachable',
-      details: msg,
-    });
+  for (const lvl of LEVELS) {
+    // Request hashed QI groups from both nodes simultaneously
+    const [resA, resB] = await Promise.all([
+      fetchFromNode(NODES.A, `/check-anonymity?ageLevel=${lvl.age}&zipLevel=${lvl.zip}`),
+      fetchFromNode(NODES.B, `/check-anonymity?ageLevel=${lvl.age}&zipLevel=${lvl.zip}`),
+    ]);
+
+    if (!resA.ok || !resB.ok) {
+      const msg = [
+        !resA.ok ? `Node A: ${resA.error}` : null,
+        !resB.ok ? `Node B: ${resB.error}` : null,
+      ].filter(Boolean).join('; ');
+      return res.status(503).json({
+        error: 'k-anonymity cannot be guaranteed — one or more nodes are unreachable',
+        details: msg,
+      });
+    }
+
+    // Aggregate frequency by hash across all nodes
+    const globalFreq = {};
+    for (const { hash, count } of resA.data.groups) {
+      globalFreq[hash] = (globalFreq[hash] || 0) + count;
+    }
+    for (const { hash, count } of resB.data.groups) {
+      globalFreq[hash] = (globalFreq[hash] || 0) + count;
+    }
+
+    // Count total and suppressed
+    const totalGroups     = Object.keys(globalFreq).length;
+    const violatingHashes = Object.entries(globalFreq).filter(([, cnt]) => cnt < k);
+    const keptHashes      = Object.entries(globalFreq).filter(([, cnt]) => cnt >= k);
+
+    if (keptHashes.length === 0) continue; // all suppressed → not valid
+
+    const suppressedRecords = violatingHashes.reduce((s, [, cnt]) => s + cnt, 0);
+    const totalRecords = Object.values(globalFreq).reduce((s, c) => s + c, 0);
+    const keptRecords  = totalRecords - suppressedRecords;
+
+    // Check: all remaining groups satisfy k
+    const satisfied = violatingHashes.length === 0 || keptHashes.every(([, cnt]) => cnt >= k);
+
+    // Estimate IL (simplified, coordinator-side)
+    const ageDomain = 39; // age range 20-59
+    const ageIntervalWidth = lvl.age === 0 ? 1 : lvl.age === 1 ? 10 : lvl.age === 2 ? 20 : ageDomain;
+    const cellILAge = ageDomain > 0 ? ageIntervalWidth / ageDomain : 0;
+    const zipWildcards = [0, 1, 2, 3, 5];
+    const cellILZip = zipWildcards[lvl.zip] / 5;
+    const ilAge     = lvl.age > 0 ? cellILAge : 0;
+    const ilZip     = lvl.zip > 0 ? cellILZip : 0;
+    const ilSup     = suppressedRecords / totalRecords;
+    const ilPercent = parseFloat(((ilAge + ilZip + ilSup) / 3 * 100).toFixed(4));
+
+    if (keptRecords > 0 && ilPercent < bestIL) {
+      bestIL     = ilPercent;
+      bestLevel  = { level: lvl, suppressedRecords, totalRecords, keptRecords, ilPercent, totalGroups, validGroups: keptHashes.length };
+      bestSuppressed = violatingHashes.map(([hash]) => hash);
+    }
   }
 
-  const allRecords = fetchResults.map(r => ({
-    node: r.name,
-    records: r.data.data.map(rec => ({ ...rec, _node: r.name })),
-  }));
-
-  const mergedAll = allRecords[0].records.concat(allRecords[1].records);
-  console.log(`  Total records: ${mergedAll.length} (Node A: ${fetchResults[0].data.count}, Node B: ${fetchResults[1].data.count})`);
-
-  const ageDomain = computeAgeDomain(mergedAll);
-  const { level, eval: evalResult } = findBestLevel(mergedAll, k, ageDomain);
-
-  if (!level) {
+  if (!bestLevel) {
     return res.status(422).json({
       error: `Cannot achieve k=${k} anonymity even at maximum generalization level`,
     });
   }
 
-  const response = {
-    k,
-    status:               evalResult.result.satisfied ? 'achieved' : 'not achieved',
-    generalization: {
-      age_level:    level.age,
-      zip_level:    level.zip,
-      description:  level.desc,
-    },
-    information_loss: {
-      overall_il_percent:    `${evalResult.il.ilPercent}%`,
-      age: {
-        il_cell_percent:    `${evalResult.il.cellILAge}%`,
-        il_contribution:    `${evalResult.il.ilAgePercent}%`,
-        cells_generalized:  evalResult.il.ageAffected,
-        total_cells:        evalResult.il.totalRecords,
-      },
-      zipcode: {
-        il_cell_percent:    `${evalResult.il.cellILZip}%`,
-        il_contribution:    `${evalResult.il.ilZipPercent}%`,
-        cells_generalized:  evalResult.il.zipAffected,
-        total_cells:        evalResult.il.totalRecords,
-      },
-      suppressed: {
-        count:              evalResult.suppressedCount,
-        total_records:      evalResult.il.totalRecords,
-        il_contribution:    `${((evalResult.suppressedCount / evalResult.il.totalRecords) * 100).toFixed(2)}%`,
-        per_node:           evalResult.perNodeSuppressed,
-      },
-    },
-    stats: {
-      total_qi_groups: evalResult.result.totalGroups,
-      valid_groups:   evalResult.result.validGroups,
-      min_group_size: evalResult.result.minGroupSize,
-    },
-    nodes: fetchResults.map(r => {
-      const total = r.data.count;
-      const suppressed = evalResult.perNodeSuppressed[r.name] || 0;
-      return {
-        node:         r.name,
-        total:        total,
-        kept:         total - suppressed,
-        suppressed:   suppressed,
-      };
+  const lvl = bestLevel.level;
+  console.log(`  -> Privacy-preserving level chosen: Age=${lvl.age} Zip=${lvl.zip} ("${lvl.desc}")`);
+  console.log(`     Overall IL: ${bestLevel.ilPercent}%  |  Suppressed: ${bestLevel.suppressedRecords}/${bestLevel.totalRecords}`);
+
+  // ── Step 2: Fetch anonymized records with suppression applied ──────────────
+  const [dataA, dataB] = await Promise.all([
+    fetchFromNode(NODES.A, '/anonymized-data', {
+      method: 'post',
+      data: { ageLevel: lvl.age, zipLevel: lvl.zip, blacklistedHashes: bestSuppressed },
     }),
-    anonymized_records: evalResult.generalized.filter(r => !r._suppressed),
-    suppressed_records: evalResult.generalized.filter(r => r._suppressed),
-  };
+    fetchFromNode(NODES.B, '/anonymized-data', {
+      method: 'post',
+      data: { ageLevel: lvl.age, zipLevel: lvl.zip, blacklistedHashes: bestSuppressed },
+    }),
+  ]);
 
-  console.log(`  -> level=${level.age}/${level.zip} ("${level.desc}")`);
-  console.log(`     Overall IL: ${evalResult.il.ilPercent}%  |  Age IL: ${evalResult.il.cellILAge}%  |  Zip IL: ${evalResult.il.cellILZip}%  |  Suppressed IL: ${evalResult.il.ilSuppressPercent}%  |  Suppressed: ${evalResult.suppressedCount}/${mergedAll.length}`);
-  const perNode = evalResult.perNodeSuppressed;
-  const nodeALabel = perNode ? `Node A: ${perNode['A'] || 0} | Node B: ${perNode['B'] || 0}` : '';
-  if (nodeALabel) console.log(`     Suppressed breakdown — ${nodeALabel}`);
+  if (!dataA.ok || !dataB.ok) {
+    return res.status(503).json({ error: 'Failed to retrieve anonymized records from nodes.' });
+  }
 
-  // Hien thi cac equivalence class (nhom tuong duong theo QI)
-  const validRecords = evalResult.generalized.filter(r => !r._suppressed);
+  const anonymizedA = dataA.data.data.map(r => ({ ...r, _node: 'A' }));
+  const anonymizedB = dataB.data.data.map(r => ({ ...r, _node: 'B' }));
+  const allAnonymized = anonymizedA.concat(anonymizedB);
+
+  // Display equivalence classes
   const qiGroups = {};
-  for (const r of validRecords) {
+  for (const r of allAnonymized) {
     const key = `${r.age_gen}|${r.gender}|${r.zip_gen}`;
     if (!qiGroups[key]) qiGroups[key] = [];
     qiGroups[key].push(r);
   }
-
   const sortedGroups = Object.entries(qiGroups)
-    .map(([key, rows]) => {
-      const [age_gen, gender, zip_gen] = key.split('|');
-      return { key, age_gen, gender, zip_gen, count: rows.length, rows };
-    })
+    .map(([key, rows]) => { const [ag, gd, zg] = key.split('|'); return { ag, gd, zg, count: rows.length, rows }; })
     .sort((a, b) => b.count - a.count);
 
-  const MAX_GROUPS_TO_SHOW = 3;
-  const selectedGroups = sortedGroups.slice(0, MAX_GROUPS_TO_SHOW);
-
-  console.log('\n  === Equivalence Classes (cac nhom tuong duong theo QI) ===');
-  console.log(`  Cac ban ghi co cung gia tri QI (Age, Gender, ZipCode) duoc gom vao cung mot nhom tuong duong (equivalence class).`);
-  console.log(`  Tong so nhom QI hop le (count >= ${k}): ${sortedGroups.length}`);
-  console.log(`  Hien thi ${Math.min(MAX_GROUPS_TO_SHOW, selectedGroups.length)} nhom (moi nhom co it nhat ${k} ban ghi):\n`);
-
-  selectedGroups.forEach((group, idx) => {
-    console.log(`  [Equivalence Class ${idx + 1}]`);
-    console.log(`    QI: Age=${group.age_gen}, Gender=${group.gender}, ZipCode=${group.zip_gen}`);
-    console.log(`    So ban ghi trong nhom: ${group.count}`);
-    console.log(`    Cac ban ghi:`);
-    group.rows.forEach((rec, i) => {
-      const nodeLabel = rec._node === 'A' ? 'Node A' : 'Node B';
-      console.log(`      ${i + 1}. [${nodeLabel}] id=${rec.id}, age=${rec.age_gen}, gender=${rec.gender}, zipcode=${rec.zip_gen}, disease=${rec.disease}`);
-    });
-    console.log();
+  const MAX_SHOW = 3;
+  console.log('\n  === Equivalence Classes (QI groups) ===');
+  console.log(`  Total valid QI groups: ${sortedGroups.length}`);
+  sortedGroups.slice(0, MAX_SHOW).forEach((g, i) => {
+    console.log(`  [Class ${i + 1}] Age=${g.ag}, Gender=${g.gd}, ZipCode=${g.zg} — ${g.count} records`);
+    g.rows.slice(0, 2).forEach(r =>
+      console.log(`    - [Node ${r._node}] id=${r.id}, disease=${r.disease}`)
+    );
   });
 
-  // const N_PER_NODE = 10;
-  // const kept = evalResult.generalized.filter(r => !r._suppressed);
-  // const sampleA = kept.filter(r => r._node === 'A').slice(0, N_PER_NODE);
-  // const sampleB = kept.filter(r => r._node === 'B').slice(0, N_PER_NODE);
-  // const sampleSup = evalResult.generalized.filter(r => r._suppressed).slice(0, 4);
+  const suppressedA = (dataA.data._total || (bestLevel.totalRecords / 2)) - dataA.data.count;
+  const suppressedB = (dataB.data._total || (bestLevel.totalRecords / 2)) - dataB.data.count;
 
-  // console.log('\n  === Anonymized records ===');
-  // for (const [node, sample] of [['Node A', sampleA], ['Node B', sampleB]]) {
-  //   console.log(`\n  [${node}] Valid records (k >= ${k}):`);
-  //   sample.forEach(r => {
-  //     console.log(`    age=${r.age_gen}  gender=${r.gender}  zipcode=${r.zip_gen}  disease=${r.disease}`);
-  //   });
-  //   if (sample.length < N_PER_NODE) {
-  //     console.log(`    (only ${sample.length} valid records from this node)`);
-  //   }
-  // }
+  // IL component breakdowns (coordinator-side estimates)
+  const ageDomain = 39;
+  const ageIntervalWidth = lvl.age === 0 ? 1 : lvl.age === 1 ? 10 : lvl.age === 2 ? 20 : ageDomain;
+  const cellILAge = ageDomain > 0 ? ageIntervalWidth / ageDomain : 0;
+  const zipWildcards = [0, 1, 2, 3, 5];
+  const cellILZip = zipWildcards[lvl.zip] / 5;
+  const ilAgeContrib = parseFloat((lvl.age > 0 ? cellILAge * 100 : 0).toFixed(4));
+  const ilZipContrib = parseFloat((lvl.zip > 0 ? cellILZip * 100 : 0).toFixed(4));
+  const ilSupContrib = parseFloat((bestLevel.suppressedRecords / bestLevel.totalRecords * 100).toFixed(4));
 
-  // if (sampleSup.length > 0) {
-  //   console.log(`\n  [SUPPRESSED] Records removed (group size < ${k}):`);
-  //   sampleSup.forEach(r => {
-  //     console.log(`    age=${r.age_gen}  gender=${r.gender}  zipcode=${r.zip_gen}  disease=${r.disease}  [from ${r._node}]`);
-  //   });
-  //   if (evalResult.suppressedCount > 4) {
-  //     console.log(`    ... +${evalResult.suppressedCount - 4} more suppressed records`);
-  //   }
-  // }
+  // Compute min_group_size from kept records
+  const qiGroupSizes = Object.values(
+    allAnonymized.reduce((acc, r) => {
+      const key = `${r.age_gen}|${r.gender}|${r.zip_gen}`;
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {})
+  );
+  const minGroupSize = qiGroupSizes.length > 0 ? Math.min(...qiGroupSizes) : 0;
 
-  res.json(response);
+  res.json({
+    k,
+    status: 'achieved',
+    protocol: 'Privacy-Preserving Hashed QI Group Counting',
+    generalization: {
+      age_level:   lvl.age,
+      zip_level:   lvl.zip,
+      description: lvl.desc,
+    },
+    information_loss: {
+      overall_il_percent: `${bestLevel.ilPercent}%`,
+      age: {
+        il_cell_percent:   `${(cellILAge * 100).toFixed(4)}%`,
+        il_contribution:   `${ilAgeContrib}%`,
+        cells_generalized: lvl.age > 0 ? bestLevel.keptRecords : 0,
+        total_cells:       bestLevel.totalRecords,
+      },
+      zipcode: {
+        il_cell_percent:   `${(cellILZip * 100).toFixed(4)}%`,
+        il_contribution:   `${ilZipContrib}%`,
+        cells_generalized: lvl.zip > 0 ? bestLevel.keptRecords : 0,
+        total_cells:       bestLevel.totalRecords,
+      },
+      suppressed: {
+        count:           bestLevel.suppressedRecords,
+        total_records:   bestLevel.totalRecords,
+        il_contribution: `${ilSupContrib}%`,
+        per_node:        { A: Math.max(0, suppressedA), B: Math.max(0, suppressedB) },
+      },
+    },
+    stats: {
+      total_qi_groups: bestLevel.totalGroups,
+      valid_groups:    bestLevel.validGroups,
+      min_group_size:  minGroupSize,
+    },
+    nodes: [
+      { node: 'A', total: bestLevel.totalRecords / 2, kept: dataA.data.count, suppressed: Math.max(0, suppressedA) },
+      { node: 'B', total: bestLevel.totalRecords / 2, kept: dataB.data.count, suppressed: Math.max(0, suppressedB) },
+    ],
+    suppressed: {
+      count:    bestLevel.suppressedRecords,
+      total:    bestLevel.totalRecords,
+    },
+    anonymized_records: allAnonymized,
+    suppressed_records: [],  // Coordinator does not receive suppressed raw records (privacy-preserving design)
+  });
 });
 
-app.get('/run-levels', async (req, res) => {
-  const fetchResults = await Promise.all(
-    Object.entries(NODES).map(async ([name, url]) => {
-      const r = await fetchFromNode(url, '/patients');
-      return { name, ...r };
-    })
-  );
 
-  const failedNodes = fetchResults.filter(r => !r.ok);
-  if (failedNodes.length > 0) {
-    return res.status(503).json({ error: 'One or more nodes unreachable' });
+// ── GET /run-levels ─────────────────────────────────────────────────────────
+// Compare IL across multiple k values using the hashed protocol.
+app.get('/run-levels', async (req, res) => {
+  // Pre-fetch hashed QI groups for all levels from both nodes
+  const levelHashCache = {};
+  for (const lvl of LEVELS) {
+    const key = `${lvl.age}_${lvl.zip}`;
+    const [resA, resB] = await Promise.all([
+      fetchFromNode(NODES.A, `/check-anonymity?ageLevel=${lvl.age}&zipLevel=${lvl.zip}`),
+      fetchFromNode(NODES.B, `/check-anonymity?ageLevel=${lvl.age}&zipLevel=${lvl.zip}`),
+    ]);
+    if (!resA.ok || !resB.ok) {
+      return res.status(503).json({ error: 'One or more nodes unreachable' });
+    }
+    const globalFreq = {};
+    for (const { hash, count } of resA.data.groups) globalFreq[hash] = (globalFreq[hash] || 0) + count;
+    for (const { hash, count } of resB.data.groups) globalFreq[hash] = (globalFreq[hash] || 0) + count;
+    levelHashCache[key] = globalFreq;
   }
 
-  const mergedAll = fetchResults[0].data.data.map((rec, i) => ({ ...rec, _node: 'A' }))
-    .concat(fetchResults[1].data.data.map(rec => ({ ...rec, _node: 'B' })));
-  const ageDomain = computeAgeDomain(mergedAll);
-  const comparison  = [];
+  const comparison = [];
+  const ageDomain = 39;
 
   for (const k of [5, 10, 20, 50, 150, 250, 350, 500, 700]) {
-    const { level, eval: evalResult } = findBestLevel(mergedAll, k, ageDomain);
+    let bestLvl = null;
+    let bestIL  = Infinity;
+
+    for (const lvl of LEVELS) {
+      const freq = levelHashCache[`${lvl.age}_${lvl.zip}`];
+      const totalRecords = Object.values(freq).reduce((s, c) => s + c, 0);
+      const violating    = Object.entries(freq).filter(([, c]) => c < k);
+      const keptHashes   = Object.entries(freq).filter(([, c]) => c >= k);
+      if (keptHashes.length === 0) continue;
+
+      const suppressedCount = violating.reduce((s, [, c]) => s + c, 0);
+      const ageIW = lvl.age === 0 ? 1 : lvl.age === 1 ? 10 : lvl.age === 2 ? 20 : ageDomain;
+      const ilAge = lvl.age > 0 ? (ageIW / ageDomain) : 0;
+      const zipWildcards = [0, 1, 2, 3, 5];
+      const ilZip = lvl.zip > 0 ? (zipWildcards[lvl.zip] / 5) : 0;
+      const ilSup = suppressedCount / totalRecords;
+      const ilPct = parseFloat(((ilAge + ilZip + ilSup) / 3 * 100).toFixed(4));
+
+      if (ilPct < bestIL) {
+        bestIL  = ilPct;
+        bestLvl = { lvl, ilPct, suppressedCount };
+      }
+    }
+
     comparison.push({
       k,
-      age_level:   level ? level.age : null,
-      zip_level:   level ? level.zip : null,
-      description: level ? level.desc : 'impossible',
-      information_loss_percent: evalResult ? evalResult.il.ilPercent : null,
-      information_loss_age_percent: evalResult ? evalResult.il.ilAgePercent : null,
-      information_loss_zip_percent: evalResult ? evalResult.il.ilZipPercent : null,
-      suppressed:  evalResult ? evalResult.suppressedCount : null,
-      suppressed_per_node: evalResult ? evalResult.perNodeSuppressed : null,
-      total_valid: evalResult ? evalResult.keptCount : null,
-      achieved:   !!level,
+      age_level:                  bestLvl ? bestLvl.lvl.age : null,
+      zip_level:                  bestLvl ? bestLvl.lvl.zip : null,
+      description:                bestLvl ? bestLvl.lvl.desc : 'impossible',
+      information_loss_percent:   bestLvl ? bestLvl.ilPct : null,
+      suppressed:                 bestLvl ? bestLvl.suppressedCount : null,
+      achieved:                   !!bestLvl,
     });
   }
 
-  res.json({ total_records: mergedAll.length, comparison });
+  const sample = levelHashCache[`0_0`];
+  const total  = sample ? Object.values(sample).reduce((s, c) => s + c, 0) : 0;
+  res.json({ total_records: total, comparison });
 });
 
 app.listen(PORT, () => {

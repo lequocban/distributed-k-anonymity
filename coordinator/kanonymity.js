@@ -9,12 +9,12 @@
  *    - Lij, Uij = bounds of the generalized interval
  *
  * 2. Zipcode (Hierarchy-based / Precision Metric):
- *    IL_zip = current_level / max_level
- *    - Level 0: exact 5-digit (IL=0/4=0%)
- *    - Level 1: hide 1 digit  (IL=1/4=25%)
- *    - Level 2: hide 2 digits (IL=2/4=50%)
- *    - Level 3: hide 3 digits (IL=3/4=75%)
- *    - Level 4: hide 4+ digits → ***** (IL=4/4=100%)
+ *    IL_zip = wildcards_hidden / total_digits (where total_digits = 5)
+ *    - Level 0: exact 5-digit (IL=0/5=0%, Precision: 100%)
+ *    - Level 1: hide 1 digit  (IL=1/5=20%, Precision: 80%)
+ *    - Level 2: hide 2 digits (IL=2/5=40%, Precision: 60%)
+ *    - Level 3: hide 3 digits (IL=3/5=60%, Precision: 40%)
+ *    - Level 4: hide 5 digits → ***** (IL=5/5=100%, Precision: 0%)
  *
  * 3. Suppressed records:
  *    IL_sup = (suppressed_count / total_count)
@@ -140,8 +140,9 @@ function calculateInformationLoss(records, ageLevel, zipLevel, suppressedCount, 
 
   const cellILAge = width > 0 ? ageIntervalWidth / width : 0;
 
-  // --- Zip IL (Precision Metric: current_level / max_level) ---
-  const cellILZip = zipLevel / ZIP_MAX_LEVEL;
+  // --- Zip IL (Precision Metric: hidden_digits / 5) ---
+  const zipWildcards = [0, 1, 2, 3, 5];
+  const cellILZip = zipWildcards[zipLevel] / 5;
 
   // Tất cả records đều bị generalize (nếu level > 0)
   const ageAffected = ageLevel > 0 ? total : 0;
