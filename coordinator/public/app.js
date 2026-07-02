@@ -203,6 +203,11 @@ function renderRecords() {
 async function runKAnonymity(event) {
   event.preventDefault();
   const k = elements.kInput.value.trim();
+  const parsedK = Number(k);
+  if (isNaN(parsedK) || parsedK < 3) {
+    showMessage(elements.runMessage, 'k quá bé không đảm bảo an toàn', true);
+    return;
+  }
 
   setLoading(elements.runButton, true, 'Đang chạy...');
   showMessage(elements.runMessage, `Đang chạy k-anonymity với k=${k}...`);

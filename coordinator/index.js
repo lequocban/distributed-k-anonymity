@@ -32,6 +32,9 @@ function parseK(value, defaultValue = K) {
     return { ok: false, error: 'k must be a positive integer' };
   }
   const parsed = Number(value);
+  if (parsed < 3) {
+    return { ok: false, error: 'k quá bé không đảm bảo an toàn' };
+  }
   if (!Number.isSafeInteger(parsed)) {
     return { ok: false, error: 'k is too large' };
   }
